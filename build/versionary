@@ -1,0 +1,95 @@
+#!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Nolan Bragan
+# SPDX-License-Identifier: GPL-2.0-or-later
+"""Generate an Apexis build version.
+
+coreos-assembler invokes this as::
+
+    src/config/versionary --build-args=src/config/build-args.conf [--dev]
+
+and uses stdout as the build ID, which becomes a directory name under
+``builds/``. The file must be executable — cosa calls it directly, not via an
+interpreter.
+
+Fedora's own ``versionary`` implements the FCOS/RHCOS stream numbering scheme.
+This one is deliberately simpler: Apexis has no released streams yet, and
+inventing a stream taxonomy before 1.0 would be premature. Revisit once there
+are real channels (``plan.md`` §5 puts one ISO per Fedora release plus a rolling
+``apexis-edge``).
+
+Version format::
+
+    <VERSION>.<YYYYMMDD>.<n>         0.1.0.20261011.3
+    <VERSION>.dev.<YYYYMMDD>.<n>     0.1.0.dev.20261011.3
+
+The trailing ``n`` increments within a day so repeat builds of the same tree get
+distinct directories and cosa can reuse earlier results.
+"""
+
+from __future__ import annotations
+
+import argparse
+import datetime
+import os
+import sys
+from pathlib import Path
+
+
+def eprint(*args) -> None:
+    print(*args, file=sys.stderr)
+
+
+def read_build_args(path: Path) -> dict[str, str]:
+    """Parse the dotenv-style build args. Missing file is not fatal."""
+    values: dict[str, str] = {}
+    try:
+        text = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        eprint(f"versionary: no {path}, using defaults")
+        return values
+
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        values[key.strip()] = value.strip().strip("\"'")
+    return values
+
+
+def next_iteration(builds_dir: Path, prefix: str) -> int:
+    """One past the highest n already used for this prefix."""
+    if not builds_dir.is_dir():
+        return 0
+    highest = -1
+    marker = prefix + "."
+    for entry in builds_dir.iterdir():
+        if entry.name.startswith(marker) and entry.name[len(marker) :].isdigit():
+            highest = max(highest, int(entry.name[len(marker) :]))
+    return highest + 1
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--build-args", default="src/config/build-args.conf")
+    parser.add_argument("--dev", action="store_true")
+    parser.add_argument("--workdir", default=None)
+    args = parser.parse_args()
+
+    if args.workdir:
+        os.chdir(args.workdir)
+
+    config = read_build_args(Path(args.build_args))
+    version = config.get("VERSION", "0.1.0")
+    today = datetime.date.today().strftime("%Y%m%d")
+
+    prefix = f"{version}.dev.{today}" if args.dev else f"{version}.{today}"
+    build_id = f"{prefix}.{next_iteration(Path('builds'), prefix)}"
+
+    eprint(f"versionary: selected build version {build_id}")
+    print(build_id)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
