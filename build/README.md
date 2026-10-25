@@ -12,10 +12,16 @@ into a bootable Apexis image.
   the OS identity, removing Fedora imagery
 - The design token values themselves (CI-enforced contrast validation)
 
-**Not verified — needs a Linux build host:**
+**Resolved by the first build (was unverified):**
 
-No image has been composed yet. This repository is developed on Windows, which
-cannot run `cosa` (it needs Podman and `/dev/kvm`). Specifically unconfirmed:
+- `coreos-assembler` *does* run under WSL2 — `/dev/kvm` is present and writable,
+  systemd is PID 1, and podman passes KVM through to containers.
+- The config structure is valid: `cosa init` located both `manifest.yaml` and
+  `image.yaml`.
+- `cosa fetch` no longer exists; `build-with-buildah` is the default and fetches
+  as part of `build`.
+
+**Still unconfirmed:**
 
 - the base `ref:` for the Fedora Plasma atomic desktop
 - the exact `ostree:` keys accepted in `image.yaml`
@@ -44,18 +50,41 @@ Or by hand, if you want to see what each step does:
 
 ```sh
 podman pull quay.io/coreos-assembler/coreos-assembler
-podman run --rm -it --privileged \
-  -v "$PWD/build:/srv/src/config:ro" \
-  -v "$PWD/.build:/srv/ctx" \
-  --name cosa \
-  quay.io/coreos-assembler/coreos-assembler:latest
 
-# inside the container:
-cosa init /srv/src/config
-cosa fetch
-cosa build
-cosa run          # boot the image in QEMU
+# init the workdir against the local config. Note: `cosa init <path>` treats its
+# argument as a clone target, which fails because build/ is not empty — the
+# documented local pattern is COREOS_ASSEMBLER_CONFIG_GIT plus /dev/null.
+podman run --rm -it --privileged \
+  -e COREOS_ASSEMBLER_CONFIG_GIT=/srv/src/config \
+  -v "$PWD/.build:/srv:Z" \
+  -v "$PWD/build:/srv/src/config:Z" \
+  --entrypoint /usr/bin/cosa \
+  quay.io/coreos-assembler/coreos-assembler:latest \
+  init --force /dev/null
+
+# `cosa fetch` is gone — build-with-buildah is the default and fetches as part
+# of the build. Build directly.
+podman run --rm -it --privileged \
+  -e COREOS_ASSEMBLER_CONFIG_GIT=/srv/src/config \
+  -v "$PWD/.build:/srv:Z" \
+  -v "$PWD/build:/srv/src/config:Z" \
+  --entrypoint /usr/bin/cosa \
+  quay.io/coreos-assembler/coreos-assembler:latest \
+  build
+
+# boot the resulting image in QEMU
+podman run --rm -it --privileged \
+  -e COREOS_ASSEMBLER_CONFIG_GIT=/srv/src/config \
+  -v "$PWD/.build:/srv:Z" \
+  -v "$PWD/build:/srv/src/config:Z" \
+  --entrypoint /usr/bin/cosa \
+  quay.io/coreos-assembler/coreos-assembler:latest \
+  run
 ```
+
+`cosa` derives the build version by executing `build/versionary`, which emits a
+string like `0.1.0.dev.20261011.0`. That becomes the directory name under
+`.build/builds/`. It reads `build/build-args.conf` for `VERSION`.
 
 The design tokens are staged into `overlay.d/` by `build.sh` before the build,
 so the image and the tokens can never drift apart. CI regenerates tokens and
